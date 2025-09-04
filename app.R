@@ -1,12 +1,12 @@
-pacman::p_load(shiny, sf, tidyverse, bslib, mapgl, arrow, duckdb, DBI)
+pacman::p_load(shiny, sf, tidyverse, bslib, mapgl, arrow)
 
-con <- dbConnect(drv = duckdb::duckdb(), dbdir = "data/bus_expansion.duckdb")
+# con <- dbConnect(drv = duckdb::duckdb(), dbdir = "data/bus_expansion.duckdb")
 
-pt_stop_sf <- tbl(con, "pt_stops")  %>%  collect() %>%
+pt_stop_sf <- read_parquet("data/pt_stops.parquet") %>%
   st_as_sf(coords = c("x", "y"), crs = 4326, remove = FALSE) %>% filter(!is.na(mode))
 
-agg_stop <- tbl(con, "agg_stop") %>%
-  select(-c(day_cnt, hours_cnt, x, y)) %>% relocate(daytype, .before = stop_name) %>% collect()
+agg_stop <- read_parquet("data/agg_stops.parquet") %>%
+  select(-c(day_cnt, hours_cnt, x, y)) %>% relocate(daytype, .before = stop_name)
 
 pt_route <- st_read("data/geo.gpkg", layer = "pt_route_geom")
 
