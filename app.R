@@ -1,17 +1,20 @@
-pacman::p_load(shiny, sf, tidyverse, bslib, mapgl, arrow)
+pacman::p_load(shiny, sf, tidyverse, bslib, mapgl, arrow, duckdb, DBI)
 
+con <- dbConnect(drv = duckdb::duckdb(), dbdir = "data/bus_expansion.duckdb")
 
-# con<-dbConnect(drv = RSQLite::SQLite(),dbdir = "data/pt_explorer.sqlite")
-# dbListTables(con)
-full_schedule <- read_parquet("data/full_schedule.parquet")
+pt_stop_sf <- tbl(con, "pt_stops")  %>%  collect() %>%
+  st_as_sf(coords = c("x", "y"), crs = 4326, remove = FALSE) %>% filter(!is.na(mode))
 
-pt_stop_sf <- full_schedule %>% distinct(stop_id, stop_name, x, y) %>% st_as_sf(coords = c("x", "y"), crs = 4326)
+agg_stop <- tbl(con, "agg_stop") %>%
+  select(-c(day_cnt, hours_cnt, x, y)) %>% relocate(daytype, .before = stop_name) %>% collect()
+
+pt_route <- st_read("data/geo.gpkg", layer = "pt_route_geom")
 
 ui <- page_sidebar(
   title = "Brisbane LGA Public Transport Stops and Services",
   sidebar = sidebar(
-    selectInput("sel_daytype", "Day Type", choices = c("weekday", "weekend")),
-    verbatimTextOutput("clicked_feature"),
+    textInput("search_stop_id", "Search Stop ID", value = ""),
+    verbatimTextOutput("search_info"),
     tableOutput("schedule_table")
   ),
   card(
@@ -21,35 +24,69 @@ ui <- page_sidebar(
 )
 
 server <- function(input, output, session) {
+
+  filtered_stops <- reactive({
+    req(input$search_stop_id)
+    # Trim whitespace for safety
+    search_id <- trimws(as.character(input$search_stop_id))
+    pt_stop_sf %>% filter(as.character(stop_id) == search_id)
+  })
+
   output$map <- renderMaplibre({
-    maplibre(style = carto_style("positron")) |>
+    m <- maplibre(style = carto_style("positron")) |>
       fit_bounds(pt_stop_sf, animate = FALSE) |>
       add_circle_layer(id = "bne_pt_stops",
         source = pt_stop_sf,
-        circle_color = "blue",
-        circle_radius =  3)
-  })
-  output$clicked_feature <- renderPrint({
-    req(input$map_feature_click)
-    props <- input$map_feature_click$properties
-    # Show specific properties, e.g., stop_name and stop_id
-    list(
-      stop_id = props$stop_id,
-      stop_name = props$stop_name
-    )
-  })
-  output$schedule_table <- renderTable({
-    req(input$map_feature_click, input$sel_daytype)
-    sid <- input$map_feature_click$properties$stop_id %>% pluck(1)
-    if (is.null(sid) || length(sid) == 0 || is.na(sid)) {
-      return(NULL)
+        circle_stroke_color = "#ffffff",
+        circle_color = match_expr("mode", values = pt_stop_sf$mode %>% unique(),
+          stops = c("grey", "orange", "blue")),
+        hover_options = list(circle_radius = 8, circle_color = "#ffff99"),
+        circle_radius =  3) |>
+      add_line_layer(source = pt_route, id = "route",
+        line_color = match_expr("route_type", values = pt_stop_sf$mode %>% unique(),
+          stops = c("grey", "orange", "blue")), line_cap = "butt",
+        tooltip = "trip_headsign") |>
+      add_categorical_legend(legend_title = "Stop Mode", values = pt_stop_sf$mode %>% unique(),
+        colors = c("grey", "orange", "blue"), patch_shape = "hexagon")
+
+    stops_to_highlight <- filtered_stops()
+    if (nrow(stops_to_highlight) > 0) {
+      m <- m |> add_circle_layer(
+        id = "highlighted_stops",
+        source = stops_to_highlight,
+        circle_color = "red",
+        circle_radius = 8
+      ) %>%
+        # Zoom in to the stop at zoom level 12
+        set_view(
+          center = st_coordinates(stops_to_highlight)[1, ],
+          zoom = 15
+        )
     }
-    daytype <- input$sel_daytype
-    full_schedule %>%
-      dplyr::filter(stop_id == sid, daytype == daytype) # Filter rows
+
+    m
   })
 
+  output$search_info <- renderPrint({
+    stops <- filtered_stops()
+    if (nrow(stops) == 0) {
+      "No stop found with that ID."
+    } else {
+      list(
+        Found_Stop_ID = unique(stops$stop_id),
+        Stop_Name = unique(stops$stop_name),
+        Mode = unique(stops$mode)
+      )
+    }
+  })
 
+  output$schedule_table <- renderTable({
+    req(input$search_stop_id)
+    sid <- trimws(as.character(input$search_stop_id))
+    agg_stop %>%
+      filter(as.character(stop_id) == sid) %>%
+      select(-stop_id)
+  })
 }
 
 shinyApp(ui, server)
