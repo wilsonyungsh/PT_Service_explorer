@@ -27,7 +27,7 @@ ui <- page_sidebar(
       choices = stop_choices,
       selected = "",
       options = list(placeholder = "Type or select a Stop ID or Stop Name", searchField = c("label", "value"))),
-    sliderInput("slider", "Show Route Geometry Distance greater than :",
+    sliderInput("slider", "Show Route Geometry Distance(km) greater than :",
       value = 0, min = 0, max = 25),
     sliderInput("maxheadway", "Show Stop Maximum Headway less than (Minutes):",
       value = 15, min = 5, max = 120),
