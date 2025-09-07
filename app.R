@@ -19,6 +19,7 @@ pt_route <- st_read("data/geo.gpkg", layer = "pt_route_geom") %>% mutate(dist_km
 
 # Prepare named vector: names are labels (stop names), values are IDs
 stop_choices <- setNames(as.character(pt_stop_sf$stop_id), pt_stop_sf$stop_name)
+route_choices <- unique(pt_route$route_short_name)
 
 ui <- page_sidebar(
   title = "Brisbane LGA Public Transport Stops and Services - Service Period : 2025.08.28-10.27 from Translink GTFS",
@@ -27,6 +28,10 @@ ui <- page_sidebar(
       choices = stop_choices,
       selected = "",
       options = list(placeholder = "Type or select a Stop ID or Stop Name", searchField = c("label", "value"))),
+    selectizeInput("search_route", "Search Route Number",
+      choices = route_choices,
+      selected = "",
+      options = list(placeholder = "earch Route Number")),
     sliderInput("slider", "Show Route Geometry Distance(km) greater than :",
       value = 0, min = 0, max = 25),
     sliderInput("maxheadway", "Show Stop Maximum Headway less than (Minutes):",
@@ -41,6 +46,17 @@ ui <- page_sidebar(
       conditionalPanel(
         condition = "input.search_stop_id != ''",
         DT::dataTableOutput("schedule_table")
+      ),
+      value = "schedule"
+    )
+  ),
+  accordion(
+    id = "route_panel",
+    accordion_panel(
+      "Route Information",
+      conditionalPanel(
+        condition = "input.search_route != ''",
+        DT::dataTableOutput("route_table")
       ),
       value = "schedule"
     )
@@ -61,6 +77,17 @@ server <- function(input, output, session) {
     # Trim whitespace for safety
     search_id <- trimws(as.character(input$search_stop_id))
     pt_stop_sf %>% filter(as.character(stop_id) == search_id | tolower(stop_name) == tolower(search_id))
+  })
+  observe({
+    updateSelectizeInput(session, "search_route", choices = route_choices, selected = "", server = TRUE)
+  })
+
+  filtered_routes <- reactive({
+    req(input$search_route)
+    # Trim whitespace for safety
+    selected_id <- trimws(as.character(input$search_route))
+    print(selected_id)
+    pt_route %>% filter(route_short_name == selected_id)
   })
 
   output$map <- renderMaplibre({
@@ -97,6 +124,25 @@ server <- function(input, output, session) {
         set_view(
           center = st_coordinates(stops_to_highlight)[1, ] %>% as.vector(),
           zoom = 13
+        )
+    }
+  })
+  observeEvent(filtered_routes(), {
+    routes_to_highlight <- filtered_routes()
+    proxy <- maplibre_proxy("map")
+    # coords <- st_bbox(st_centroid(routes_to_highlight))
+    # Clear old highlighted stops layer if it exists
+    proxy |> clear_layer("highlighted_routes")
+    if (nrow(routes_to_highlight) > 0) {
+      proxy |>
+        add_line_layer(
+          id = "highlighted_routes",
+          source = routes_to_highlight,
+          line_color = "purple",
+          line_width = 4
+        ) |>
+        fit_bounds(
+          bbox = st_bbox(routes_to_highlight)
         )
     }
   })
@@ -145,6 +191,18 @@ server <- function(input, output, session) {
       agg_stop %>%
         filter(as.character(stop_id) == sid) %>%
         select(-stop_id)
+    },
+    options = list(scrollX = TRUE,
+      pageLength = 2, autoWidth = TRUE),
+    width = "100%")
+
+  output$route_table <- DT::renderDataTable(
+    {
+      req(input$search_route)
+      rid <- trimws(as.character(input$search_route))
+      pt_route %>% st_drop_geometry() %>%
+        filter(as.character(route_short_name) == rid) %>%
+        select(route_type, route_short_name, trip_headsign, direction_id, dist_km)
     },
     options = list(scrollX = TRUE,
       pageLength = 2, autoWidth = TRUE),
