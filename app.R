@@ -1,6 +1,6 @@
 library(shiny)
 library(sf)
-library(tidyverse)
+library(dplyr)
 library(bslib)
 library(mapgl)
 library(arrow)
