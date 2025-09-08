@@ -58,7 +58,7 @@ ui <- page_sidebar(
         condition = "input.search_route != ''",
         DT::dataTableOutput("route_table")
       ),
-      value = "schedule"
+      value = "route_tbl"
     )
   ),
   card(
@@ -98,14 +98,15 @@ server <- function(input, output, session) {
         circle_stroke_color = "#ffffff",
         circle_color = match_expr("mode", values = pt_stop_sf$mode %>% unique(),
           stops = c("grey", "orange", "blue")),
-        hover_options = list(circle_radius = 8, circle_color = "#ffff99"),
+        hover_options = list(circle_radius = 15, circle_color = "#ffff99"),
         circle_radius =  3) |>
       add_line_layer(source = pt_route, id = "route",
         line_color = match_expr("route_type", values = pt_stop_sf$mode %>% unique(),
           stops = c("grey", "orange", "blue")), line_cap = "butt",
         tooltip = "trip_headsign") |>
       add_categorical_legend(legend_title = "Stop Mode", values = pt_stop_sf$mode %>% unique(),
-        colors = c("grey", "orange", "blue"), patch_shape = "hexagon")
+        colors = c("grey", "orange", "blue"), patch_shape = "hexagon") %>%
+      add_layers_control(layers = c("pt_stops", "route"), position = "top-right")
     m
   })
   observeEvent(filtered_stops(), {
@@ -124,7 +125,8 @@ server <- function(input, output, session) {
         set_view(
           center = st_coordinates(stops_to_highlight)[1, ] %>% as.vector(),
           zoom = 13
-        )
+        ) %>%
+        add_layers_control(layers = c("pt_stops", "route"), position = "top-right")
     }
   })
   observeEvent(filtered_routes(), {
@@ -143,14 +145,16 @@ server <- function(input, output, session) {
         ) |>
         fit_bounds(
           bbox = st_bbox(routes_to_highlight)
-        )
+        ) %>%
+        add_layers_control(layers = c("pt_stops", "route"), position = "top-right")
     }
   })
   # route distance slider
   observeEvent(input$slider, {
     maplibre_proxy("map") |>
       set_filter("route",
-        list(">", get_column("dist_km"), input$slider))
+        list(">", get_column("dist_km"), input$slider)) %>%
+      add_layers_control(layers = c("pt_stops", "route"), position = "top-right")
   })
 
   observeEvent(input$maxheadway, {
@@ -167,7 +171,8 @@ server <- function(input, output, session) {
           circle_color = "yellow",
           circle_radius = 6,
           tooltip = "stop_name"
-        )
+        ) %>%
+        add_layers_control(layers = c("pt_stops", "route"), position = "top-right")
     }
   })
 
@@ -202,7 +207,7 @@ server <- function(input, output, session) {
       rid <- trimws(as.character(input$search_route))
       pt_route %>% st_drop_geometry() %>%
         filter(as.character(route_short_name) == rid) %>%
-        select(route_type, route_short_name, trip_headsign, direction_id, dist_km)
+        distinct(route_type, route_short_name, trip_headsign, direction_id, dist_km)
     },
     options = list(scrollX = TRUE,
       pageLength = 2, autoWidth = TRUE),
