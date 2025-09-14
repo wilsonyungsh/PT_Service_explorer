@@ -14,7 +14,7 @@ I would like to prove public transport service frequency and coverage is really 
 - Deployed on Shinyapp.io
 
 # Data Processing and aggregation
-I will place this in another repo - work in progress
+I will place this in [another repo](https://github.com/wilsonyungsh/pt_explorer_data_preparation) - it is still work in progress
 
 # Dashboard Features
 1. Search stops by ID or name OR by click on the map, map will zoom to the stop and stop will be highlighted. In addition, Stop level service trend will appear on the "stop service information summary" pane, which is also collapsable.
