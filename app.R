@@ -6,31 +6,71 @@ library(bsicons)
 library(mapgl)
 library(arrow)
 
-# Load data once at startup
-pt_stop_sf <- read_parquet("data/pt_stops.parquet") %>%
-  st_as_sf(coords = c("x", "y"), crs = 4326, remove = FALSE) %>%
-  filter(!is.na(mode)) %>%
-  mutate(tooltip_info = paste0(stop_name, " (", stop_id, ") - ", mode))
+# ==============================================================================
+# CONFIGURATION: Define available GTFS versions
+# ==============================================================================
+gtfs_versions <- list(
+  "2025-08-28 to 2025-10-27" = "data/2025_08_28",
+  "2026-02-10 to 2026-04-11" = "data/2026_02_10"
+)
 
-agg_stop <- read_parquet("data/agg_stops.parquet") %>%
-  select(-c(day_cnt, hours_cnt, x, y)) %>%
-  relocate(daytype, .before = stop_name) %>%
-  relocate(routes_list, .after = unique_routes_cnt)
+# Default version (latest)
+default_version <- names(gtfs_versions)[length(gtfs_versions)]
 
-pt_route <- st_read("data/geo.gpkg", layer = "pt_route_geom") %>%
-  mutate(dist_km = round(path_dist_m / 1000, 2)) %>%
-  select(-path_dist_m) %>%
-  mutate(route_tooltip = paste0("Route ", route_short_name, ": ", trip_headsign, " (", dist_km, " km)"))
+# Define zone colors (moved outside function so it's available globally)
+zone_color <- c(
+  MDR = "#FF6565",
+  LDR = "#FFDCDC",
+  LMR = "#FFA4A4",
+  HDR = "#AA0000",
+  MU  = "#FF7800"
+)
 
-# Pre-compute choices as named lists (not vectors) to avoid jsonlite warnings
-stop_choices <- as.list(setNames(as.character(pt_stop_sf$stop_id), pt_stop_sf$stop_name))
-route_choices_vec <- unique(pt_route$route_short_name)
-route_choices <- as.list(setNames(route_choices_vec, route_choices_vec))
+# ==============================================================================
+# HELPER FUNCTION: Load GTFS data for a specific version
+# ==============================================================================
+load_gtfs_data <- function(data_path) {
+  message("Loading GTFS data from: ", data_path)
 
-# Pre-compute unique modes
-unique_modes <- unique(pt_stop_sf$mode)
-mode_colors <- c("grey", "orange", "blue")
+  # Load common datasets (zone_overlay)
+  zone_overlay <- st_read("data/common_datasets.gpkg", layer = "zone_overlay", quiet = TRUE)
 
+  # Load all three datasets
+  pt_stop_sf <- read_parquet(file.path(data_path, "pt_stops.parquet")) %>%
+    st_as_sf(coords = c("x", "y"), crs = 4326, remove = FALSE) %>%
+    filter(!is.na(mode)) %>%
+    mutate(tooltip_info = paste0(stop_name, " (", stop_id, ") - ", mode))
+
+  agg_stop <- read_parquet(file.path(data_path, "agg_stops.parquet")) %>%
+    select(-c(day_cnt, hours_cnt, x, y)) %>%
+    relocate(daytype, .before = stop_name) %>%
+    relocate(routes_list, .after = unique_routes_cnt)
+
+  pt_route <- st_read(file.path(data_path, "geo.gpkg"), layer = "pt_route_geom", quiet = TRUE) %>%
+    mutate(dist_km = round(path_dist_m / 1000, 2)) %>%
+    select(-path_dist_m) %>%
+    mutate(route_tooltip = paste0("Route ", route_short_name, ": ", trip_headsign, " (", dist_km, " km)"))
+
+  # Pre-compute choices
+  stop_choices <- as.list(setNames(as.character(pt_stop_sf$stop_id), pt_stop_sf$stop_name))
+  route_choices_vec <- unique(pt_route$route_short_name)
+  route_choices <- as.list(setNames(route_choices_vec, route_choices_vec))
+
+  # Return as list (including zone_overlay)
+  list(
+    pt_stop_sf = pt_stop_sf,
+    agg_stop = agg_stop,
+    pt_route = pt_route,
+    zone_overlay = zone_overlay,
+    stop_choices = stop_choices,
+    route_choices = route_choices,
+    unique_modes = unique(pt_stop_sf$mode)
+  )
+}
+
+# ==============================================================================
+# UI DEFINITION
+# ==============================================================================
 ui <- page_fillable(
   theme = bs_theme(
     bootswatch = "flatly",
@@ -101,16 +141,123 @@ ui <- page_fillable(
       .text-muted i {
         opacity: 0.3;
       }
+
+      /* Version selector styling */
+      #gtfs_version_select {
+        background: #fff;
+        border: 2px solid #3498db;
+        font-weight: 500;
+      }
+
+      /* Zone type checkboxes with color indicators */
+      #zone_types .checkbox {
+        margin-bottom: 8px;
+      }
+
+      #zone_types label {
+        display: flex;
+        align-items: center;
+        font-size: 0.9rem;
+        padding: 4px 0;
+      }
+
+      #zone_types input[type='checkbox'] {
+        margin-right: 8px;
+      }
+
+      /* Add colored squares next to zone labels */
+      #zone_types label:has(input[value='HDR'])::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background-color: #AA0000;
+        margin-right: 6px;
+        margin-left: 6px;
+        border-radius: 3px;
+      }
+
+      #zone_types label:has(input[value='MDR'])::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background-color: #FF6565;
+        margin-right: 6px;
+        margin-left: 6px;
+        border-radius: 3px;
+      }
+
+      #zone_types label:has(input[value='LMR'])::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background-color: #FFA4A4;
+        margin-right: 6px;
+        margin-left: 6px;
+        border-radius: 3px;
+      }
+
+      #zone_types label:has(input[value='LDR'])::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background-color: #FFDCDC;
+        margin-right: 6px;
+        margin-left: 6px;
+        border-radius: 3px;
+      }
+
+      #zone_types label:has(input[value='MU'])::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        background-color: #FF7800;
+        margin-right: 6px;
+        margin-left: 6px;
+        border-radius: 3px;
+      }
+
+      /* Loading indicator */
+      .loading-indicator {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(255, 255, 255, 0.95);
+        padding: 20px 40px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        z-index: 9999;
+      }
     "))
   ),
 
-  # Top navigation bar with title
+  # Top navigation bar with title and version selector
   div(
     class = "bg-primary text-white p-3 mb-0",
     style = "box-shadow: 0 2px 4px rgba(0,0,0,0.1);",
-    h4("Brisbane Public Transport Explorer", class = "mb-1"),
-    p("Service Period: 2025.08.28 - 10.27 | Data: Translink GTFS",
-      class = "mb-0", style = "font-size: 0.9rem; opacity: 0.9;")
+    div(
+      class = "d-flex justify-content-between align-items-center",
+      div(
+        h4("Brisbane Public Transport Explorer", class = "mb-1"),
+        p(textOutput("version_info", inline = TRUE),
+          class = "mb-0", style = "font-size: 0.9rem; opacity: 0.9;")
+      ),
+      div(
+        style = "min-width: 280px;",
+        selectInput(
+          "gtfs_version_select",
+          label = NULL,
+          choices = names(gtfs_versions),
+          selected = default_version,
+          width = "100%"
+        )
+      )
+    )
   ),
 
   # Main layout with sidebar and map
@@ -174,6 +321,24 @@ ui <- page_fillable(
           min = 5,
           max = 120,
           step = 5
+        ),
+
+        # Zone type filter
+        div(
+          class = "mt-3",
+          h6("Zone Types", class = "mb-2"),
+          checkboxGroupInput(
+            "zone_types",
+            label = NULL,
+            choices = c(
+              "Low Density Residential (LDR)" = "LDR",
+              "Low-Medium Residential (LMR)" = "LMR",
+              "Medium Density Residential (MDR)" = "MDR",
+              "High Density Residential (HDR)" = "HDR",
+              "Mixed Use (MU)" = "MU"
+            ),
+            selected = c("LDR", "LMR", "MDR", "HDR", "MU")
+          )
         )
       ),
 
@@ -254,18 +419,89 @@ ui <- page_fillable(
   )
 )
 
+# ==============================================================================
+# SERVER LOGIC
+# ==============================================================================
 server <- function(input, output, session) {
-  # Initialize selectize inputs once on startup
-  isolate({
-    updateSelectizeInput(session, "search_stop_id",
-      choices = stop_choices,
-      server = TRUE)
-    updateSelectizeInput(session, "search_route",
-      choices = route_choices,
-      server = TRUE)
+  # Data cache to avoid reloading
+  data_cache <- reactiveValues(
+    versions = list(),
+    current_version = NULL
+  )
+
+  # Pre-compute color scheme
+  mode_colors <- c("grey", "orange", "blue")
+
+  # ===========================================================================
+  # REACTIVE: Load data based on selected version
+  # ===========================================================================
+  current_data <- reactive({
+    req(input$gtfs_version_select)
+
+    version_key <- input$gtfs_version_select
+
+    # Check cache first
+    if (!is.null(data_cache$versions[[version_key]])) {
+      message("Using cached data for version: ", version_key)
+      return(data_cache$versions[[version_key]])
+    }
+
+    # Load new version
+    data_path <- gtfs_versions[[version_key]]
+
+    # Show loading state
+    showNotification(
+      paste("Loading GTFS version:", version_key),
+      duration = 2,
+      type = "message"
+    )
+
+    data <- load_gtfs_data(data_path)
+
+    # Cache it
+    data_cache$versions[[version_key]] <- data
+    data_cache$current_version <- version_key
+
+    showNotification(
+      "Data loaded successfully!",
+      duration = 2,
+      type = "message"
+    )
+
+    return(data)
   })
 
-  # Debounced slider inputs to reduce update frequency
+  # ===========================================================================
+  # Update selectize inputs when version changes
+  # ===========================================================================
+  observeEvent(current_data(), {
+    data <- current_data()
+
+    # Clear current selections
+    updateSelectizeInput(session, "search_stop_id",
+      choices = data$stop_choices,
+      selected = character(0),
+      server = TRUE)
+
+    updateSelectizeInput(session, "search_route",
+      choices = data$route_choices,
+      selected = character(0),
+      server = TRUE)
+
+    # Reset filters
+    updateSliderInput(session, "slider", value = 0)
+    updateSliderInput(session, "maxheadway", value = 15)
+  })
+
+  # ===========================================================================
+  # Version info display
+  # ===========================================================================
+  output$version_info <- renderText({
+    req(input$gtfs_version_select)
+    paste("Service Period:", input$gtfs_version_select, "| Data: Translink GTFS")
+  })
+
+  # Debounced slider inputs
   slider_debounced <- reactive({
     input$slider
   }) %>% debounce(500)
@@ -274,74 +510,103 @@ server <- function(input, output, session) {
     input$maxheadway
   }) %>% debounce(500)
 
-  # Reactive for filtered stops - searches both ID and name
+  zone_types_debounced <- reactive({
+    input$zone_types
+  }) %>% debounce(300)
+
+  # ===========================================================================
+  # Filtered stops reactive
+  # ===========================================================================
   filtered_stops <- reactive({
-    req(input$search_stop_id)
+    req(input$search_stop_id, current_data())
     search_id <- trimws(as.character(input$search_stop_id))
 
-    # Search in stop_choices to see if input matches a stop_id (value) or stop_name (name)
-    # If user selected from dropdown, search_id will be the stop_id
-    # If user typed, we need to check both
-    pt_stop_sf %>%
+    current_data()$pt_stop_sf %>%
       filter(
         as.character(stop_id) == search_id |
           tolower(stop_name) == tolower(search_id)
       )
   })
 
-  # Reactive for filtered routes
+  # ===========================================================================
+  # Filtered routes reactive
+  # ===========================================================================
   filtered_routes <- reactive({
-    req(input$search_route)
+    req(input$search_route, current_data())
     selected_id <- trimws(as.character(input$search_route))
-    pt_route %>% filter(route_short_name == selected_id)
+    current_data()$pt_route %>% filter(route_short_name == selected_id)
   })
 
-  # Initialize map ONCE with all base layers
+  # ===========================================================================
+  # Initialize map with current data
+  # ===========================================================================
   output$map <- renderMaplibre({
+    req(current_data())
+    data <- current_data()
+
     maplibre(style = carto_style("positron")) |>
-      fit_bounds(pt_stop_sf, animate = FALSE) |>
+      fit_bounds(data$pt_stop_sf, animate = FALSE) |>
+      # Add zone layer FIRST (so it appears underneath)
+      add_fill_layer(
+        source = data$zone_overlay,
+        id = "zone",
+        fill_opacity = 0.4, tooltip = "zone_code",
+        fill_color = match_expr(
+          column = "zone_code",
+          values = unique(data$zone_overlay$zone_code),
+          stops = unname(zone_color)
+        )
+      ) |>
+      # Then add routes
+      add_line_layer(
+        source = data$pt_route,
+        id = "route",
+        line_color = match_expr("route_type",
+          values = data$unique_modes,
+          stops = mode_colors),
+        line_cap = "butt",
+        tooltip = "route_tooltip"
+      ) |>
+      # Add stops on top
       add_circle_layer(
         id = "pt_stops",
-        source = pt_stop_sf,
+        source = data$pt_stop_sf,
         circle_stroke_color = "#ffffff",
         circle_color = match_expr("mode",
-          values = unique_modes,
+          values = data$unique_modes,
           stops = mode_colors),
         hover_options = list(circle_radius = 15, circle_color = "#ffff99"),
         circle_radius = 3,
         tooltip = "tooltip_info"
       ) |>
-      add_line_layer(
-        source = pt_route,
-        id = "route",
-        line_color = match_expr("route_type",
-          values = unique_modes,
-          stops = mode_colors),
-        line_cap = "butt",
-        tooltip = "route_tooltip"
-      ) |>
+      # Add legend with all layers
       add_categorical_legend(
-        legend_title = "Stop Mode",
-        values = unique_modes,
-        colors = mode_colors,
+        legend_title = "Layers",
+        values = c(data$unique_modes, names(zone_color)),
+        colors = c(mode_colors, unname(zone_color)),
         patch_shape = "hexagon"
       ) |>
+      # Add layer controls
       add_layers_control(
-        layers = c("pt_stops", "route"),
+        layers = c("pt_stops", "route", "zone"),
         position = "top-right"
       )
   })
 
+  # ===========================================================================
   # Clear filters button
+  # ===========================================================================
   observeEvent(input$clear_filters, {
     updateSliderInput(session, "slider", value = 0)
     updateSliderInput(session, "maxheadway", value = 120)
-
-    # Clear the headway highlight layer
+    updateCheckboxGroupInput(session, "zone_types",
+      selected = c("LDR", "LMR", "MDR", "HDR", "MU"))
     maplibre_proxy("map") |> clear_layer("highlighted_stops_headway")
   })
 
+  # ===========================================================================
   # Observe stop search and highlight
+  # ===========================================================================
   observeEvent(filtered_stops(), {
     stops_to_highlight <- filtered_stops()
     proxy <- maplibre_proxy("map")
@@ -365,7 +630,9 @@ server <- function(input, output, session) {
     }
   })
 
+  # ===========================================================================
   # Observe route search and highlight
+  # ===========================================================================
   observeEvent(filtered_routes(), {
     routes_to_highlight <- filtered_routes()
     proxy <- maplibre_proxy("map")
@@ -385,23 +652,27 @@ server <- function(input, output, session) {
     }
   })
 
+  # ===========================================================================
   # Route distance filter with debouncing
+  # ===========================================================================
   observeEvent(slider_debounced(), {
     maplibre_proxy("map") |>
       set_filter("route",
         list(">", get_column("dist_km"), slider_debounced()))
   })
 
-  # Headway filter with debouncing and optimization
+  # ===========================================================================
+  # Headway filter with debouncing
+  # ===========================================================================
   observeEvent(maxheadway_debounced(), {
-    # Pre-filter IDs first
-    headway_stop_ids <- agg_stop %>%
+    req(current_data())
+
+    headway_stop_ids <- current_data()$agg_stop %>%
       filter(max_headway_in_minutes <= maxheadway_debounced()) %>%
       pull(stop_id) %>%
       as.character()
 
-    # Then filter spatial data
-    stops_to_highlight_headway <- pt_stop_sf %>%
+    stops_to_highlight_headway <- current_data()$pt_stop_sf %>%
       filter(stop_id %in% headway_stop_ids)
 
     proxy <- maplibre_proxy("map")
@@ -419,7 +690,28 @@ server <- function(input, output, session) {
     }
   })
 
+  # ===========================================================================
+  # Zone type filter with debouncing
+  # ===========================================================================
+  observeEvent(zone_types_debounced(), {
+    selected_zones <- zone_types_debounced()
+
+    if (length(selected_zones) == 0) {
+      # Hide all zones if nothing selected
+      maplibre_proxy("map") |>
+        set_filter("zone", list("==", "zone_code", "NONE"))
+    } else {
+      # Show only selected zones
+      # Create filter: ["in", "zone_code", "HDR", "MDR", ...]
+      filter_expr <- c("in", "zone_code", selected_zones)
+      maplibre_proxy("map") |>
+        set_filter("zone", filter_expr)
+    }
+  })
+
+  # ===========================================================================
   # Search info output
+  # ===========================================================================
   output$search_info <- renderPrint({
     stops <- filtered_stops()
     if (nrow(stops) == 0) {
@@ -433,13 +725,15 @@ server <- function(input, output, session) {
     }
   })
 
-  # Schedule table with caching
+  # ===========================================================================
+  # Schedule table
+  # ===========================================================================
   output$schedule_table <- DT::renderDataTable(
     {
-      req(input$search_stop_id)
+      req(input$search_stop_id, current_data())
       sid <- trimws(as.character(input$search_stop_id))
 
-      agg_stop %>%
+      current_data()$agg_stop %>%
         filter(as.character(stop_id) == sid) %>%
         select(-stop_id)
     },
@@ -447,17 +741,19 @@ server <- function(input, output, session) {
       scrollX = TRUE,
       pageLength = 2,
       autoWidth = TRUE,
-      dom = "tip"  # Simplified DOM for better performance
+      dom = "tip"
     ),
     width = "100%")
 
+  # ===========================================================================
   # Route table
+  # ===========================================================================
   output$route_table <- DT::renderDataTable(
     {
-      req(input$search_route)
+      req(input$search_route, current_data())
       rid <- trimws(as.character(input$search_route))
 
-      pt_route %>%
+      current_data()$pt_route %>%
         st_drop_geometry() %>%
         filter(as.character(route_short_name) == rid) %>%
         distinct(route_type, route_short_name, trip_headsign, direction_id, dist_km)
@@ -471,6 +767,8 @@ server <- function(input, output, session) {
     width = "100%")
 }
 
-# Increase session timeout
-options(shiny.maxRequestSize = 100 * 1024^2)  # 100MB max upload
+# ==============================================================================
+# RUN APP
+# ==============================================================================
+options(shiny.maxRequestSize = 100 * 1024^2)
 shinyApp(ui, server)
