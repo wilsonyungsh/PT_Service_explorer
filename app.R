@@ -590,7 +590,7 @@ server <- function(input, output, session) {
           values = data$unique_modes,
           stops = mode_colors),
         line_cap = "butt",
-        tooltip = "route_tooltip"
+        tooltip = "route_tooltip", visibility = "none"
       ) |>
       # Add stops on top
       add_circle_layer(
@@ -604,16 +604,34 @@ server <- function(input, output, session) {
         circle_radius = 3,
         tooltip = "tooltip_info"
       ) |>
+      turf_buffer(layer_id = "pt_stops",
+        radius = 300,
+        units = "meters",
+        source_id = "buffer") %>%
+      add_fill_layer(id = "buffer_map",
+        source = "buffer",
+        fill_color = "green", fill_opacity = 0.1, visibility = "none") %>%
+      turf_buffer(layer_id = "pt_stops",
+        radius = 400,
+        units = "meters",
+        source_id = "buffer2") %>%
+      add_fill_layer(id = "buffer_map2",
+        source = "buffer2",
+        fill_color = "yellow", fill_opacity = 0.1, visibility = "none") %>%
       # Add legend with all layers
       add_categorical_legend(
         legend_title = "Layers",
-        values = c(data$unique_modes, names(zone_color)),
-        colors = c(mode_colors, unname(zone_color)),
+        values = c(data$unique_modes, names(zone_color), "300m", "400m"),
+        colors = c(mode_colors, unname(zone_color), "green", "yellow"),
         patch_shape = "hexagon"
       ) |>
       # Add layer controls
       add_layers_control(
-        layers = c("pt_stops", "route", "zone"),
+        layers = c("Public Transport Stops" = "pt_stops",
+          "Routes" = "route",
+          "Zoning" = "zone",
+          "Buffer 300m" = "buffer_map",
+          "Buffer 400m" = "buffer_map2"),
         position = "top-right"
       )
   })
