@@ -14,17 +14,24 @@ gtfs_versions <- list(
   "2026-02-10 to 2026-04-11" = "data/2026_02_10"
 )
 
-# Default version (latest)
+# Default version (latest) - ONLY load this on startup
 default_version <- names(gtfs_versions)[length(gtfs_versions)]
 
-# Define zone colors (moved outside function so it's available globally)
+# Define zone colors
 zone_color <- c(
-  MDR = "#FF6565",
   LDR = "#FFDCDC",
   LMR = "#FFA4A4",
+  MDR = "#FF6565",
   HDR = "#AA0000",
   MU  = "#FF7800"
 )
+
+# ==============================================================================
+# MEMORY OPTIMIZATION: Load zone_overlay ONCE globally (it's shared across versions)
+# ==============================================================================
+zone_overlay <- st_read("data/common_datasets.gpkg", layer = "zone_overlay", quiet = TRUE)
+
+# Keep original zone geometry (no simplification to preserve detail)
 
 # ==============================================================================
 # HELPER FUNCTION: Load GTFS data for a specific version
@@ -32,36 +39,49 @@ zone_color <- c(
 load_gtfs_data <- function(data_path) {
   message("Loading GTFS data from: ", data_path)
 
-  # Load common datasets (zone_overlay)
-  zone_overlay <- st_read("data/common_datasets.gpkg", layer = "zone_overlay", quiet = TRUE)
-
-  # Load all three datasets
+  # Load pt_stops
   pt_stop_sf <- read_parquet(file.path(data_path, "pt_stops.parquet")) %>%
     st_as_sf(coords = c("x", "y"), crs = 4326, remove = FALSE) %>%
     filter(!is.na(mode)) %>%
     mutate(tooltip_info = paste0(stop_name, " (", stop_id, ") - ", mode))
 
-  agg_stop <- read_parquet(file.path(data_path, "agg_stops.parquet")) %>%
-    select(-c(day_cnt, hours_cnt, x, y)) %>%
-    relocate(daytype, .before = stop_name) %>%
-    relocate(routes_list, .after = unique_routes_cnt)
+  # Load agg_stops - only keep essential columns
+  agg_stop <- read_parquet(file.path(data_path, "agg_stops.parquet"))
 
+  # Remove columns only if they exist
+  cols_to_remove <- c("day_cnt", "hours_cnt", "x", "y")
+  cols_to_remove <- cols_to_remove[cols_to_remove %in% names(agg_stop)]
+  if (length(cols_to_remove) > 0) {
+    agg_stop <- agg_stop %>% select(-all_of(cols_to_remove))
+  }
+
+  # Relocate columns only if they exist
+  if ("daytype" %in% names(agg_stop) && "stop_name" %in% names(agg_stop)) {
+    agg_stop <- agg_stop %>% relocate(daytype, .before = stop_name)
+  }
+  if ("routes_list" %in% names(agg_stop) && "unique_routes_cnt" %in% names(agg_stop)) {
+    agg_stop <- agg_stop %>% relocate(routes_list, .after = unique_routes_cnt)
+  }
+
+  # Load routes and simplify geometry
   pt_route <- st_read(file.path(data_path, "geo.gpkg"), layer = "pt_route_geom", quiet = TRUE) %>%
     mutate(dist_km = round(path_dist_m / 1000, 2)) %>%
     select(-path_dist_m) %>%
     mutate(route_tooltip = paste0("Route ", route_short_name, ": ", trip_headsign, " (", dist_km, " km)"))
+
+  # Simplify route geometries to reduce memory (20m tolerance)
+  pt_route <- st_simplify(pt_route, dTolerance = 20)
 
   # Pre-compute choices
   stop_choices <- as.list(setNames(as.character(pt_stop_sf$stop_id), pt_stop_sf$stop_name))
   route_choices_vec <- unique(pt_route$route_short_name)
   route_choices <- as.list(setNames(route_choices_vec, route_choices_vec))
 
-  # Return as list (including zone_overlay)
+  # Return as list (zone_overlay is global, not included here)
   list(
     pt_stop_sf = pt_stop_sf,
     agg_stop = agg_stop,
     pt_route = pt_route,
-    zone_overlay = zone_overlay,
     stop_choices = stop_choices,
     route_choices = route_choices,
     unique_modes = unique(pt_stop_sf$mode)
@@ -423,28 +443,32 @@ ui <- page_fillable(
 # SERVER LOGIC
 # ==============================================================================
 server <- function(input, output, session) {
-  # Data cache to avoid reloading
+  # MEMORY OPTIMIZATION: Only cache current version, clear previous
   data_cache <- reactiveValues(
-    versions = list(),
-    current_version = NULL
+    current = NULL,
+    version_key = NULL
   )
 
   # Pre-compute color scheme
   mode_colors <- c("grey", "orange", "blue")
 
   # ===========================================================================
-  # REACTIVE: Load data based on selected version
+  # REACTIVE: Load data based on selected version (NO MULTI-VERSION CACHING)
   # ===========================================================================
   current_data <- reactive({
     req(input$gtfs_version_select)
 
     version_key <- input$gtfs_version_select
 
-    # Check cache first
-    if (!is.null(data_cache$versions[[version_key]])) {
+    # If same version, return cached
+    if (!is.null(data_cache$version_key) && data_cache$version_key == version_key) {
       message("Using cached data for version: ", version_key)
-      return(data_cache$versions[[version_key]])
+      return(data_cache$current)
     }
+
+    # Clear old cache before loading new version (free memory)
+    data_cache$current <- NULL
+    gc() # Force garbage collection
 
     # Load new version
     data_path <- gtfs_versions[[version_key]]
@@ -458,9 +482,9 @@ server <- function(input, output, session) {
 
     data <- load_gtfs_data(data_path)
 
-    # Cache it
-    data_cache$versions[[version_key]] <- data
-    data_cache$current_version <- version_key
+    # Cache only current version
+    data_cache$current <- data
+    data_cache$version_key <- version_key
 
     showNotification(
       "Data loaded successfully!",
@@ -546,14 +570,15 @@ server <- function(input, output, session) {
 
     maplibre(style = carto_style("positron")) |>
       fit_bounds(data$pt_stop_sf, animate = FALSE) |>
-      # Add zone layer FIRST (so it appears underneath)
+      # Add zone layer FIRST (using global zone_overlay)
       add_fill_layer(
-        source = data$zone_overlay,
+        source = zone_overlay,
         id = "zone",
-        fill_opacity = 0.4, tooltip = "zone_code",
+        fill_opacity = 0.7,
+        tooltip = "zone_code",
         fill_color = match_expr(
           column = "zone_code",
-          values = unique(data$zone_overlay$zone_code),
+          values = unique(zone_overlay$zone_code),
           stops = unname(zone_color)
         )
       ) |>
@@ -702,7 +727,6 @@ server <- function(input, output, session) {
         set_filter("zone", list("==", "zone_code", "NONE"))
     } else {
       # Show only selected zones
-      # Create filter: ["in", "zone_code", "HDR", "MDR", ...]
       filter_expr <- c("in", "zone_code", selected_zones)
       maplibre_proxy("map") |>
         set_filter("zone", filter_expr)
